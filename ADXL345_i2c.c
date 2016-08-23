@@ -1,3 +1,8 @@
+// Sumple program for IoT in Civil Enginnering Areas.
+// This program is for Raspberry Pi 3 gcc(6.1.0),gcc (4.9.1)
+// Device is used Ananlog Devices 3-Axis accel. meter (Mems Sensor)
+//  By Hideaki Yokokawa (Yokokawa Dyn. lab. In Kanagawa Pref. Kawasaki City)
+// Licence is all GNU lisence,use free from Commercial and Research.
 
 #include <stdio.h>
 #include <stdlib.h>
