@@ -1,0 +1,629 @@
+
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <math.h>
+#include <time.h>
+#include <unistd.h>
+#include <getopt.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <sys/ioctl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <linux/types.h>
+#include <linux/i2c-dev.h>
+#include <wiringPi.h>
+
+#define ADXL345_ADDRESS  0x53
+#define LOOPS  120000
+#define LSB_GALS 4e-3*980.665
+#define SUMP_RATE 0.005
+#define CAL_LOP  3000
+
+// prottype
+int setupi2c();
+int setupi2cdev(int fd,int dev);
+int writei2c(int fd,unsigned char buf[],int databyte);
+int readi2c(int fd,unsigned char buf[],int databyte);
+int writei2c8bits(int fd,unsigned char addr,unsigned char data);
+int writei2c16bits(int fd,unsigned char addr,unsigned int data);
+unsigned char readi2c8bits(int fd,unsigned char data);
+short readi2c16bits(int fd,unsigned char data);
+//get daytime
+void get_daytime (char Time_string[]);
+
+// get cputemp
+float get_cputemp(void);
+
+// measure routine
+void start_measure(int fd);
+void stop_measure(int fd);
+void measure_accl(short *x,short *y,short *z,int fd);
+
+// measure  accl
+ void read_acc(void);
+
+// FFT routine
+ void fft2(int n,double ar[],double ai[],int ifft);
+ void fft(int n, double theta, double ar[], double ai[], 
+        double tmpr[], double tmpi[]);
+
+
+ //save data
+ void save_data(void);
+ void calc_amppha(double re,double im, double *amp,double *pha);
+
+int k,l,fd,calon,eon,filton,fnum;
+short int  *xf,*yf,*zf;
+float *xr,*xi,*yr,*yi,*zr,*zi;
+double filtc[300];
+
+long long int xava,yava,zava;
+int loops;
+unsigned char flg;
+FILE *fp,*ff,*fi;
+
+//Thread  routines
+// observe thread
+
+void* tread_acc(void* args)
+{
+   while( k < loops) {
+while (digitalRead(0) ==0) {};
+ read_acc();
+}
+ eon=1;
+   printf("finish read\n");
+    return NULL;
+}
+
+ void read_acc(void)
+{
+ int rnum;
+ int j;
+ short int x,y,z;
+
+rnum=readi2c8bits(fd,0x39);
+ for (j=0;j<=rnum;j++){
+  measure_accl(&x,&y,&z,fd);
+if (k < loops){ 
+ xf[k]=x;
+ yf[k]=y;
+ zf[k]=z;
+k++;flg=0;}else { flg =1;}
+   }
+}
+
+ void*  tcal_fft(void* args)
+{
+
+  float df;
+     int j,hloop;
+
+//X co-ord
+     if (coord ==0){
+printf("X-co-ord FFT Thread start\n");
+        xr=(double *)calloc(loops,sizeof(double));
+   xi=(double *)calloc(loops,sizeof(double));
+        for(j=0;j<loop;j++)xr[j]=xf[j]-(double)calon*xava;
+   fft2(loops,xr,xi,1);
+
+}
+//Y co-ord
+      if (coord ==1){
+         printf("Y-co-ord FFT Thread start\n");
+      yr=(double *)calloc(loops,sizeof(double));
+   yi=(double *)calloc(loops,sizeof(double));
+        for(j=0;j<loop;j++)yr[j]=yf[j]-(double)calon*yava;;
+   fft2(loops,yr,yi,1);
+}
+
+//Z co-ord
+      if (coord ==2){
+         printf("Z-co-ord FFT Thread start\n");
+zr=(double *)calloc(loops,sizeof(double));
+   zi=(double *)calloc(loops,sizeof(double));
+        for(j=0;j<loop;j++)zr[j]=zf[j]-(double)calon*zava;;
+   fft2(loops,xr,xi,1);
+}
+
+}
+
+/*
+  F[k]=Σ_j=0^n-1 a[j]*exp(±2*pi*i*j*k/n),0<=k<n を計算する.
+  n はデータ数で任意, theta は ±2*PI/n, 
+  ar[0...n-1], ai[0...n-1], はデータの実部, 虚部, 
+  tmpr[0...n-1], tmpi[0...n-1] は作業領域.
+
+  from http://momonga.t.u-tokyo.ac.jp/%7Eooura/fftman/ftmn1_23.html#sec1_2_3
+*/
+
+ void fft2(int n,double ar[],double ai[],int ifft)
+{
+
+	double *tmpr,*tmpi;
+	double theta,pai;
+
+{
+        tmpr=(double *)calloc(n,sizeof(double));
+        tmpi=(double *)calloc(n,sizeof(double));
+			pai=4*atan(1);
+
+    theta=2*pai/(double)n;
+
+	if (ifft==-1) theta*=-1;
+}
+		fft(n,theta,ar,ai,tmpr,tmpi);
+
+free(tmpr);
+free(tmpi);
+
+  return;
+
+}
+
+ void fft(int n, double theta, double ar[], double ai[], 
+        double tmpr[], double tmpi[])
+{
+    int radix, n_radix, j, m, r;
+    double xr, xi, wr, wi;
+
+    if (n <= 1) return;
+
+    /* ---- factorization ---- */
+    for (radix = 2; radix * radix <= n; radix++) {
+        if (n % radix == 0) break;
+}
+    if (n % radix != 0) radix = n;
+    n_radix = n / radix;
+ 
+   /* ---- butterflies ---- */
+
+    for (j = 0; j < n_radix; j++) {
+        for (m = 0; m < radix; m++) {
+            xr = ar[j];
+            xi = ai[j];
+            for (r = n_radix; r < n; r += n_radix) {
+                wr = cos(theta * m * r);
+                wi = sin(theta * m * r);
+                xr += wr * ar[r + j] - wi * ai[r + j];
+                xi += wr * ai[r + j] + wi * ar[r + j];
+            }
+
+
+            wr = cos(theta * m * j);
+            wi = sin(theta * m * j);
+            tmpr[m * n_radix + j] = xr * wr - xi * wi;
+            tmpi[m * n_radix + j] = xi * wr + xr * wi;
+
+        }
+    } 
+
+    for (r = 0; r < n; r += n_radix) {
+       fft(n_radix, theta * radix, &tmpr[r], &tmpi[r], ar, ai);
+    }
+
+
+    for (j = 0; j < n_radix; j++) {
+        for (m = 0; m < radix; m++) {
+            ar[radix * j + m] = tmpr[n_radix * m + j];
+            ai[radix * j + m] = tmpi[n_radix * m + j];
+        }
+	}
+
+return;
+}
+ 
+
+
+void* tcal_filt(void *)
+{
+      float *yn;
+        yn=(short int *)calloc(loops,sizeof(short int));          
+      fir_filt(yn,xf);
+            xf=yn;
+   free(yn);
+      fir_filt(yn,xf); 
+
+}
+
+   void fir_filt(short int yn[],short int x[])
+{  int i,j;
+    for (i=0;i<loops;i++){
+      yn[i]=0.0;
+      for (j=0;j<fnum;j++){
+        if ( (i-j) > 0) yn[i] += flitc[j]*x[i-j];
+      }
+}
+
+}
+
+
+// save thread
+void* tsave_data(void* args)
+{  k=0;
+      int hloop;
+        float df;
+
+    hloop=loops/2;
+   df=(0.5*(1.0/SUMP_RATE)/(float)hloop);
+
+
+}
+
+while(k< loops){
+save_data();k++;
+}
+ printf("save task finished\n");
+   return NULL;
+}
+
+void save_data(void)
+{
+double xx,yy,zz;
+
+
+xx=(double)xf[k]-(double)calon*xava; 
+  yy=(double)yf[k]-(double)calon*yava;
+   zz=(double)zf[k]-(double)calon*zava;
+
+fprintf(fp," %lf % lf % lf % lf\n",(double)k*SUMP_RATE,xx,yy,zz);
+
+
+}
+
+void* tsavef_data(void* args)
+{  int hloop,j;
+     float df,amp,pha;
+      hloop=loop/2;
+     df=((0.5*1/SUMP_RATE))/hloop;
+
+       for (j=0;j<hloop;j++){
+
+         fprintf(ff,"%f ",df*(float)j);
+
+calc_amppha(xr[j],xi[j],&amp,&pha);
+            fprintf(ff," %f %f ",amp,pha);
+
+   calc_amppha(yr[j],yi[j],&amp,&pha);
+            fprintf(ff," %f %f ",amp,pha);
+
+   calc_amppha(zr[j],zi[j],&amp,&pha);
+            fprintf(ff," %f %f ",amp,pha);
+    fprintf("\n");
+     }
+
+}
+
+    void calc_amppha(double re,double im, double *amp,double *pha)
+{
+       *amp=sqrt(re*re+im*im);
+          *pha=atan(im/re);
+}
+
+
+void* tfilt_data(void* args)
+{
+
+}
+
+
+
+
+//main
+
+void main(int argc,char *argv[])
+{
+   //init ADXL345 regs
+
+int ret,i;
+  struct timespec res,tp1,tp2;
+double nanosec;
+unsigned char j;
+
+pthread_t fftx_thread;
+pthread_t ffty_thread;
+pthread_t fftz_thread;
+
+ptherad_t filt_thread;
+pthread_t save_thread;
+pthread_t read_thread;
+pthread_t savef_thread;
+
+unsigned char bw_rate     =0b000001011; // time step 0.005sec
+unsigned char init_enable =0b010000000;
+unsigned char init_map    =0b000000000;
+unsigned char data_format =0b000001000;
+unsigned char fifo_ctl    =0b001000111;
+unsigned char power_ctl   =0b000000000;
+
+    //init Hardware settings
+    wiringPiSetup();
+    pinMode(0,INPUT);
+
+num=0;
+knm1=-1;
+  if (argc >= 2) loops=atoi(argv[1]);
+     if (loops > LOOPS ) loops = LOOPS;
+
+// initilize memories
+
+        xf=(short int *)calloc(loops,sizeof(short int));
+   yf=(short int *)calloc(loops,sizeof(short int));
+    zf=(short int *)calloc(loops,sizeof(short int));
+
+ calon = 0;
+  if (argc >= 3) calon=1;
+
+ fp=fopen("Timehis_test.dat","wt");
+   ff=fopen("Fft_test.dat","wt");
+
+filton = 0;
+   if (argc >=4 ) {
+   fi=fopen(argv[3],"rt");
+     if (fi == NULL ) { printf("Cannot open %s\n",argv[3]);
+} else filton=1;
+
+
+// reading digital filter coefficient
+ 
+  fscanf(fi,"%d",&fnum);
+
+    for (i=0;i<fnum;i++){fscanf(fi,"%lf",&filtc[i]);}
+
+fclose(fi);
+
+// I2C device initilize
+
+ fd=setupi2c();
+ ret=setupi2cdev(fd,ADXL345_ADDRESS);
+  if (ret <0 ) {
+printf("Cannot find %0X\n",ADXL345_ADDRESS);
+    exit(-1);
+}
+
+ret= writei2c8bits(fd,0x2C,bw_rate);
+ret= writei2c8bits(fd,0x2E,init_enable);
+ret= writei2c8bits(fd,0x2F,init_map);
+ret= writei2c8bits(fd,0x31,data_format);
+ret= writei2c8bits(fd,0x38,fifo_ctl);
+ret= writei2c8bits(fd,0x2D,power_ctl);
+
+k=0;
+  if (calon >= 1) {
+printf("start Calibration 15sec \n");
+  start_measure(fd);
+ while (k <  CAL_LOP ){
+  while(digitalRead(0) == 0){};
+read_acc();
+
+}
+//stop_measure(fd);
+printf("end Calibration \n");
+xava=0;
+ yava=0;
+  zava=0;
+  for (i=0;i< CAL_LOP; i++){
+    xava+=xf[i];
+    yava+=yf[i];
+    zava+=zf[i];
+} xava/=CAL_LOP;
+yava/=CAL_LOP;
+ zava/=CAL_LOP;
+
+ printf("ava x:%f y:%f z:%f\n",xava,yava,zava);
+}
+
+k=0;
+printf("Start acquision %d steps\n",loops);
+if (calon == 0) start_measure(fd);
+
+ clock_gettime(CLOCK_REALTIME,&tp1);
+        pthread_create( &read_thread, NULL, tread_acc, (void *)NULL );
+ while (1) {
+sleep(1);
+printf(" %d\n",k);
+ if (eon == 1) break;
+}
+        pthread_join( read_thread, NULL );
+ stop_measure(fd);
+ clock_gettime(CLOCK_REALTIME,&tp2);
+ nanosec = (double)tp2.tv_sec*1000000000.0+tp2.tv_nsec - (double)tp1.tv_sec*1000000000.0+tp1.tv_nsec;
+printf("Finish acquision! %f (sec)\n",nanosec/1000000000.0);
+
+close(fd);
+
+        pthread_create( &filt_thread, NULL, tcal_filt, (void *)NULL );
+
+        pthread_create( &save_thread, NULL, tsave_data, (void *)NULL );
+
+coord=0;
+        pthread_create( &fftx_thread, NULL, tcal_fft, (void *)NULL );
+coord=1;
+        pthread_create( &ffty_thread, NULL, tcal_fft, (void *)NULL );
+coord=2;
+        pthread_create( &fftz_thread, NULL, tcal_fft, (void *)NULL );
+
+        pthread_join( save_thread, NULL );
+fclose(fp);
+     
+
+        pthread_join( fftx_thread, NULL );
+        pthread_join( fftx_thread, NULL );
+        pthread_join( fftz_thread, NULL );
+
+        pthread_create( &savef_thread, NULL, tsavef_data, (void *)NULL );
+    sleep(1);
+     fclose(ff);
+        pthread_join( savef_thread, NULL );
+
+// memories free from program
+free(xf);
+free(yf);
+free(zf);
+
+free(xi);free(xr);
+free(yi);free(yr);
+free(zi);free(zr);
+
+}
+
+void start_measure(int fd)
+{
+unsigned char power_ctl;
+
+int ret;
+ power_ctl=readi2c8bits(fd,0x2D);
+
+power_ctl =power_ctl | 0x08;
+  
+ret= writei2c8bits(fd,0x2D,power_ctl);
+
+}
+
+void stop_measure(int fd)
+{
+unsigned char power_ctl;
+
+int ret;
+ power_ctl=readi2c8bits(fd,0x2D);
+
+power_ctl =power_ctl | 0xF7;
+  
+ret= writei2c8bits(fd,0x2D,power_ctl);
+
+}
+
+
+void measure_accl(short *x,short *y,short *z,int fd)
+{
+
+*x=readi2c16bits(fd,0x32);
+
+*y=readi2c16bits(fd,0x34);
+
+*z=readi2c16bits(fd,0x36);
+
+}
+
+
+
+// SYSTEM routine
+
+int  setupi2c()
+{
+      int fd;
+      fd=open("/dev/i2c-1",O_RDWR);
+       if (fd < 0) {printf("Cannot open i2c-1 device\n");
+        exit(-1);
+      }
+      return(fd);
+}
+
+    int  setupi2cdev(int fd,int addr)
+{      int ret;
+      ret=ioctl(fd,I2C_SLAVE,addr);
+  return(ret);
+}
+
+      int  writei2c(int fd,unsigned char buf[],int databyte)
+{
+       int ret;
+          ret=write(fd,buf,databyte);
+     if ( ret != databyte ) {
+    printf("write error /n");
+       return (-1);
+}
+     return(ret);
+}
+ 
+     int readi2c(int fd,unsigned char buf[],int databyte)
+{
+     int  ret;
+      ret=read (fd,buf,databyte);
+         if (ret != databyte){
+     printf("read error!/n");
+       return(-1);
+}
+
+       return(ret);
+}
+
+    int writei2c8bits(int fd,unsigned char addr,unsigned char data)
+{
+   int ret;
+    unsigned char  buf[2];
+       buf[0]=addr;
+       buf[1]=data;
+       buf[2]=0;
+  ret=writei2c(fd,buf,2);
+     return(ret);
+}
+   int writei2c16bits(int fd,unsigned char addr,unsigned int data)
+  {
+int ret;
+      unsigned char buf[3];
+        buf[0]=addr;
+        buf[1]=(unsigned char) (data & 0xff);
+        buf[2]=(unsigned char) (data & 0xff00) >> 8;
+        buf[3]=0;
+      ret=writei2c(fd,buf,3);
+        return(ret);
+}
+
+ unsigned char readi2c8bits(int fd,unsigned char data)
+{
+   int ret;
+    unsigned char  buf[1];
+      buf[0]=data;
+     buf[1]=0;
+     writei2c(fd,buf,1);
+       readi2c(fd,buf,1);
+return(buf[0]);
+}
+
+short  readi2c16bits(int fd,unsigned char data)
+{
+     int ret;
+      unsigned char buf[2];
+      buf[0]=data;
+      writei2c(fd,buf,1);
+         readi2c(fd,buf,2);
+    return( (short) ( buf[1]<<8) | buf[0] );
+}
+
+// get daytime 
+
+void get_daytime (char Time_string[])
+{
+    time_t now;
+    struct tm *tm;
+    now = time(0);
+    if ((tm = localtime (&now)) == NULL) {
+        printf ("Error extracting time stuff\n");
+        return ;
+    }
+
+    sprintf (Time_string,"%04d-%02d-%02d %02d:%02d:%02d",
+        tm->tm_year+1900, tm->tm_mon+1, tm->tm_mday,
+        tm->tm_hour, tm->tm_min, tm->tm_sec);
+
+    return ;
+}
+
+float get_cputemp(void)
+{  FILE *fd;
+     int temp;
+      float temp_act;
+     fd=fopen ("/sys/class/thermal/thermal_zone0/temp","r");
+       fscanf(fd,"%d",&temp);
+          temp_act=(float)temp/1000.0;
+    fclose(fd);
+  return(temp_act);
+}
+
+
