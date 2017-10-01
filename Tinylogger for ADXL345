@@ -1,0 +1,200 @@
+
+#include <time.h>
+#include <unistd.h>
+#include <getopt.h>
+
+#include <fcntl.h>
+#include <pthread.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <signal.h>
+
+#include "device.h"
+
+#define LOOPS  126000
+
+#define LSB_GALS 4e-3*980.665
+
+#define SUMP_RATE 0.005
+
+void* tread_acc(void* args);
+void* tsave_data(void* args);
+
+
+//CTRL+C detect
+void  INThandler(int);
+
+// measure  accl
+ void read_acc(void);
+
+ //save data
+ void save_data(char ssw,int limits);
+
+int k,fd;
+char retflag;
+static short int xf[2][LOOPS],yf[2][LOOPS],zf[2][LOOPS];
+struct timespec tp1,tp2;
+
+pthread_t save_thread;
+pthread_t read_thread;
+
+int loops;
+char sw;
+char pathst[192];
+
+
+//Thread  routines
+// observe thread
+
+void* tread_acc(void* args)
+{
+   while(1) {
+while (digitalRead(0) ==0) {};
+ read_acc();
+}
+   }
+
+ void read_acc(void)
+{
+ int j,rnum;
+ short int x,y,z;
+
+// Read number of data at FIFO Buffer 
+      rnum=readi2c8bits(fd,0x39);
+if (rnum >0 ){
+// printf("FIFO :%d\n",rnum);
+ for (j=1;j<=rnum;j++){
+  measure_accl(&x,&y,&z,fd);
+//printf("%d %d %d \n",x,y,z);
+if (k < loops){ 
+        k++;
+    }else {
+       sw=sw^1;
+     k=0;
+     }
+//     printf("%d %d %d \n",sw,j,k);
+ xf[sw][k]=x;
+ yf[sw][k]=y;
+ zf[sw][k]=z;
+
+   }
+ }
+}
+
+// save thread
+void* tsave_data(void* args)
+{  k=0;
+  char ssw=sw^1;
+
+// save datas
+    save_data(ssw,loops);
+
+   return NULL;
+}
+
+void save_data(char ssw,int limits)
+{
+  double nanosec;
+  char Tst[64];
+  char Tfile[256];
+  int save;
+  FILE *fp;
+short int xx,yy,zz;
+
+    clock_gettime(CLOCK_REALTIME,&tp2);
+   nanosec = (double)tp2.tv_sec*1000000000.0+tp2.tv_nsec - (double)tp1.tv_sec*1000000000.0+tp1.tv_nsec;
+printf("save Acquision! %f (sec)\n",nanosec/1000000000.0);
+
+      get_daytime (Tst);
+    sprintf(Tfile,"%s/%s.dat",pathst,Tst);
+  printf("save File name:%s\n",Tfile);
+  fp=fopen(Tfile,"wt");
+ 
+  if (fp == NULL ){
+   printf("Cannot open save file!\n");
+    exit(-1);
+}
+ save=0;
+while( save < limits){
+     xx=xf[ssw][save];
+       yy=yf[ssw][save];
+         zz=zf[ssw][save];
+     fprintf(fp," % d,% d,% d\n",xx,yy,zz);
+    save++;
+     }
+
+    fclose(fp);
+     printf("save task finished\n");
+}
+
+//CTRL+C detect
+
+void  INThandler(int sig)
+{
+  FILE fp;
+   int save=0;
+// sign for STDO
+    printf("Interrupt CTRL+C or TERMINATE process\n");
+        stop_measure(fd);
+//save data
+  printf("loop:%d\n",k);
+  save_data(sw,k);
+
+// read thread ended.
+ k=loops;
+
+// close I2C device
+     close(fd);
+   printf("Acceralation aquision program is finished!\n");
+      retflag=1;
+}
+
+
+//main
+
+void main(int argc,char *argv[])
+{
+        unsigned char ssw;
+
+//pthread_t signal;
+
+// 1st
+if (argc == 0) { sprintf(pathst,"~/");} else {
+   sprintf(pathst,"%s",argv[1]);
+}
+  printf("OUT Path :%s \n",pathst);
+
+// initilize ADXL345
+fd = init_adxl(fd);
+
+// initilize cpu CLOCK
+    k=0;
+    loops=120000;
+    retflag=0;
+           clock_gettime(CLOCK_REALTIME,&tp1);
+        start_measure(fd);
+        pthread_create( &read_thread, NULL, tread_acc, (void *)NULL );
+     signal(SIGINT, INThandler);
+signal(SIGTERM, INThandler);
+
+  ssw=sw;
+
+// theread loop until count overflow or Hit CTRL+C signal
+
+     while (1) {
+         if (ssw !=sw) {
+// start save thread
+        pthread_create( &save_thread,NULL,tsave_data,(void *)NULL);
+         pthread_join(save_thread,NULL);
+          ssw=sw;
+    } else {
+// Temporary..
+   if (retflag == 1) exit(1);
+          sleep(0);
+                  }
+//Press CTRL+C
+   if (retflag == 1) exit(1);
+                      }
+}
+
