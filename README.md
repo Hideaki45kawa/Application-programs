@@ -1,5 +1,2 @@
-# devicedriver
-
-#For ARM and msp430 cpu device drive programs.
-
-#looking for more useful and sucessful!
+Accel. data aqusion Program for Raspberry Pi3
+Device is ADXL345 (Analog Dev.)
